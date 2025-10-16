@@ -1,0 +1,18 @@
+﻿# Python
+__pycache__/
+*.pyc
+
+# MATLAB / Simulink
+slprj/
+*.mex* 
+*.asv
+*.mdl.r201*
+*.autosave
+*.slxc
+*.mat
+
+# Output slices
+slices/
+
+# VS Code
+.vscode/
