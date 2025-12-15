@@ -15,14 +15,14 @@ model = 'uav_problem'  # Simulink model name
 
 eng.load_system(model, nargout=0)
 eng.set_param(model, 'SimulationCommand', 'stop', nargout=0)
-eng.set_param(model, 'FastRestart', 'off', nargout=0)
+eng.set_param(model, 'SimulationMode', 'accelerator', nargout=0) #SPEEEEEEEEEEEEED
 eng.set_param(model, 'SolverType', 'Variable-step', nargout=0)
 # Use a lighter, faster nonstiff solver and looser tolerances for speed
 eng.set_param(model, 'Solver', 'ode45', nargout=0)
 eng.set_param(model, 'StopTime', '30', nargout=0)
 eng.set_param(model, 'RelTol', '1e-4', nargout=0)
 eng.set_param(model, 'AbsTol', '1e-6', nargout=0)
-eng.set_param(model, 'MaxStep', '2e-2', nargout=0)
+eng.set_param(model, 'MaxStep', '1e-3', nargout=0) # was 5e-3 reduced for Ts better accuracy.
 
 # Design vector order:
 # k[0] = Kp_h, k[1] = Ki_h,
@@ -196,8 +196,13 @@ def fmtVal(val):
 
 
 def buildLabel(k):
-    # just use first three for a short label
-    return f"Kph{fmtVal(k[0])}_Kih{fmtVal(k[1])}_Kpth{fmtVal(k[2])}"
+    return ("Kph" + fmtVal(k[0]) +
+            "_Kih" + fmtVal(k[1]) +
+            "_Kpth" + fmtVal(k[2]) +
+            "_Kith" + fmtVal(k[3]) +
+            "_Kdth" + fmtVal(k[4]) +
+            "_KpV" + fmtVal(k[5]) +
+            "_KiV" + fmtVal(k[6]))
 
 
 def toVec(x):
@@ -257,21 +262,31 @@ def step_metrics(t, y, r, pct_band=0.02):
     if t.size == 0 or y.size == 0:
         return np.inf, np.inf, np.inf
 
+    t_vec = toVec(t)
     y_vec = toVec(y)
-    y_init = float(y_vec[0])
-    y_ss = tailValue(y_vec, max(10, y_vec.size // 10))
-    delta = y_ss - y_init
-
-    # reference target for SSE
+    if t_vec.size < 2:
+        return np.inf, np.inf, np.inf
+    # dense uniform resampling to tighten crossing interpolation
+    n_dense = max(2000, t_vec.size * 5)
+    t_dense = np.linspace(t_vec[0], t_vec[-1], n_dense)
+    y_dense = np.interp(t_dense, t_vec, y_vec)
+    # reference resample if vector
     if np.size(r) > 1:
-        r_target = float(toVec(r)[-1])
+        r_vec = toVec(r)
+        r_dense = np.interp(t_dense, t_vec, r_vec)
+        r_target = float(r_dense[-1])
     else:
         r_target = float(r)
+        r_dense = np.full_like(t_dense, r_target)
+
+    y_init = float(y_dense[0])
+    y_ss = tailValue(y_dense, max(10, y_dense.size // 10))
+    delta = y_ss - y_init
 
     # If essentially no change, fall back to original definitions
     if abs(delta) < 1e-12:
-        M = (np.max(y_vec) - y_ss) / (y_ss if y_ss != 0 else 1.0)
-        Ts = settle(t, y_vec, y_ss, pct=pct_band)
+        M = (np.max(y_dense) - y_ss) / (y_ss if y_ss != 0 else 1.0)
+        Ts = settle(t_dense, y_dense, y_ss, pct=pct_band)
         SSe = r_target - y_ss
         return Ts, M, SSe
 
@@ -305,8 +320,8 @@ def step_metrics(t, y, r, pct_band=0.02):
         tcross = tt[j - 1] + alpha * (tt[j] - tt[j - 1])
         return float(tcross)
 
-    Ts = settle_delta(t, y_vec, band_min, band_max)
-    M = (np.max(y_vec) - y_ss) / abs(delta)
+    Ts = settle_delta(t_dense, y_dense, band_min, band_max)
+    M = (np.max(y_dense) - y_ss) / abs(delta)
     SSe = r_target - y_ss
     return Ts, M, SSe
 
@@ -618,7 +633,7 @@ def runOptimization(initK, baseDir=None):
                    options={'maxiter': 200,
                             'ftol': 1e-5,
                             'disp': True,
-                            'eps': 1.4901161193847656e-08})
+                            'eps': 1.4901161193847656e-06}) #was 1.4901161193847656e-08 
 
     print('solve done')
     print('best gains vector:', res.x)
