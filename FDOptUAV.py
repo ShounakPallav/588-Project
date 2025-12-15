@@ -633,7 +633,7 @@ def runOptimization(initK, baseDir=None):
                    options={'maxiter': 200,
                             'ftol': 1e-5,
                             'disp': True,
-                            'eps': 1.4901161193847656e-06}) #was 1.4901161193847656e-08 
+                            'eps': 1.4901161193847656e-07}) #was 1.4901161193847656e-08 
 
     print('solve done')
     print('best gains vector:', res.x)

@@ -4,7 +4,9 @@ import math
 import numpy as np
 import matplotlib.pyplot as plt  # type: ignore
 
-# Folders and labels to plot (Ts vs SLSQPiter)
+# ----------------------------
+# configuration
+# ----------------------------
 CASE_FOLDERS = [
     ("slices_kp-0.5_ki0.5_kd0.5", "kp=-0.5 ki=0.5 kd=0.5"),
     ("slices_kp0.5_ki0.5_kd0.5", "kp=0.5 ki=0.5 kd=0.5"),
@@ -13,10 +15,16 @@ CASE_FOLDERS = [
 
 OUT_NAME = "functionvalvsiterationsimplemultistart.pdf"
 OUT_DERIV = "dobjectivewrtdesignvariablesfwandcent.pdf"
+OUT_UAV = "functionvalvsiterationUAVmultistart.pdf"
+OUT_UAV_DERIV = "dobjectivewrtdesignvariablesfwandcentUAV.pdf"
+OUT_NM = "functionvalvsiterationsimpleNMmultistart.pdf"
 
 # Toggles
-MAKE_TS_PLOT = False
+MAKE_TS_PLOT = True
 MAKE_DERIV_PLOT = True
+MAKE_UAV_TS_PLOT = True
+MAKE_UAV_DERIV_PLOT = True
+MAKE_TS_NM_PLOT = True
 
 # Derivative CSVs for kp, ki, kd (from step size study)
 DERIV_FILES = {
@@ -26,8 +34,63 @@ DERIV_FILES = {
 }
 
 
-def read_ts(folder):
-    # find first opt_log_*.csv in the folder
+def _parts_to_label(parts, limit=3):
+    pretty = []
+    for p in parts[:limit]:
+        i = 0
+        while i < len(p) and not p[i].isdigit() and p[i] not in ['-', '.']:
+            i += 1
+        if i == 0 or i == len(p):
+            pretty.append(p)
+        else:
+            pretty.append(f"{p[:i]}={p[i:]}" )
+    return " ".join(pretty)
+
+
+def find_uav_cases():
+    cases = []
+    for name in os.listdir("."):
+        if os.path.isdir(name) and name.startswith("slicesUAV_"):
+            raw = name.replace("slicesUAV_", "")
+            label = _parts_to_label(raw.split("_"), limit=3)
+            cases.append((name, label))
+    cases.sort()
+    return cases
+
+
+def find_uav_deriv_files():
+    """Return a mapping for UAV deriv plots; pick the first folder that actually has stepStudy CSVs."""
+    keys = ["Kp_h", "Ki_h", "Kp_th", "Ki_th", "Kd_th", "Kp_V", "Ki_V"]
+    for name in sorted(os.listdir(".")):
+        if not (os.path.isdir(name) and name.startswith("slicesUAV_")):
+            continue
+        label = name.replace("slicesUAV_", "")
+        files = {k: os.path.join(name, f"stepStudy_{label}_{k}.csv") for k in keys}
+        if any(os.path.isfile(p) for p in files.values()):
+            return files
+    return {}
+
+
+def find_nm_cases():
+    cases = []
+    for name in os.listdir("."):
+        if os.path.isdir(name) and name.startswith("slicesGF_"):
+            raw = name.replace("slicesGF_", "")
+            label = _parts_to_label(raw.split("_"), limit=3)
+            cases.append((name, label))
+    cases.sort()
+    return cases
+
+
+UAV_CASE_FOLDERS = find_uav_cases()
+UAV_DERIV_FILES = find_uav_deriv_files()
+NM_CASE_FOLDERS = find_nm_cases()
+
+
+# ----------------------------
+# helpers
+# ----------------------------
+def read_ts(folder, ts_col="Ts", iter_col="SLSQPiter", filter_feas=True, iter_filter=None, include_iter0=True):
     iters, ts_vals = [], []
     try:
         files = [f for f in os.listdir(folder) if f.startswith("opt_log_") and f.endswith(".csv")]
@@ -42,10 +105,13 @@ def read_ts(folder):
         reader = csv.DictReader(f)
         for row in reader:
             try:
-                itv = int(row.get("SLSQPiter", "0"))
-                tsv = float(row.get("Ts", "nan"))
+                itv = int(float(row.get(iter_col, "0")))
+                tsv = float(row.get(ts_col, "nan"))
                 feas_val = row.get("feas", "").lower()
-                if feas_val and feas_val not in ("true", "1"):
+                is_feas = (feas_val in ("true", "1"))
+                if filter_feas and not is_feas and not (include_iter0 and itv == 0):
+                    continue
+                if iter_filter is not None and itv not in iter_filter:
                     continue
                 if math.isfinite(tsv):
                     iters.append(itv)
@@ -55,88 +121,118 @@ def read_ts(folder):
     return iters, ts_vals
 
 
-def main():
+def plot_ts_multistart(cases, ts_col, title, out_path, legend_loc="best", iter_col="SLSQPiter", line_kwargs=None):
+    plt.figure(figsize=(7, 4))
+    for folder, label in cases:
+        x, y = read_ts(folder, ts_col=ts_col, iter_col=iter_col, filter_feas=False,
+                       iter_filter=None, include_iter0=True)
+        if x and y:
+            xy = sorted(zip(x, y), key=lambda p: p[0])
+            xs, ys = zip(*xy)
+            if line_kwargs:
+                line, = plt.plot(xs, ys, marker="o", label=label, **line_kwargs)
+            else:
+                line, = plt.plot(xs, ys, marker="o", label=label)
+            color = line.get_color()
+            if 0 in xs:
+                idx0 = xs.index(0)
+                plt.plot(xs[idx0], ys[idx0], marker="o", markersize=10,
+                         markerfacecolor='none', markeredgecolor=color, markeredgewidth=2)
+            plt.plot(xs[-1], ys[-1], marker="x", markersize=15, color=color, mew=2.5)
+    plt.xlabel(iter_col)
+    plt.ylabel(ts_col)
+    plt.title(title)
+    plt.grid(False)
+    ax = plt.gca()
+    if ax.has_data():
+        handles, labels = ax.get_legend_handles_labels()
+        proxy_init, = ax.plot([], [], marker="o", markersize=10, markerfacecolor='none',
+                              markeredgecolor='k', markeredgewidth=2, linestyle='None', label="initial (ring)")
+        proxy_final, = ax.plot([], [], marker="x", markersize=15, color='k', mew=2.5,
+                               linestyle='None', label="final (cross)")
+        handles.extend([proxy_init, proxy_final])
+        labels.extend([proxy_init.get_label(), proxy_final.get_label()])
+        ax.legend(handles, labels, loc=legend_loc)
+    plt.tight_layout()
+    plt.savefig(out_path)
+    plt.close()
+    print(f"Saved {out_path}")
+
+
+def plot_deriv_grid(files_dict, out_path, labels):
+    cols = len(labels)
+    fig, axes = plt.subplots(2, cols, figsize=(3.2*cols, 6), sharex=True)
+    if cols == 1:
+        axes = np.array([[axes[0]], [axes[1]]])
+    for col, key in enumerate(labels):
+        path = files_dict.get(key, "")
+        h_fw, df_fw = [], []
+        h_c, df_c = [], []
+        if os.path.isfile(path):
+            with open(path, newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    try:
+                        h = float(row.get("h", "nan"))
+                        fw = float(row.get("dfForward", "nan"))
+                        ce = float(row.get("dfCentral", "nan"))
+                    except Exception:
+                        continue
+                    if math.isfinite(h):
+                        if math.isfinite(fw):
+                            h_fw.append(h)
+                            df_fw.append(fw)
+                        if math.isfinite(ce):
+                            h_c.append(h)
+                            df_c.append(ce)
+        else:
+            print(f"Missing derivative CSV: {path}")
+
+        def _plot(ax, xs, ys, title):
+            if not xs:
+                ax.set_title(title + " (no data)")
+                ax.grid(True, which="both", linestyle=":")
+                return
+            pairs = sorted(zip(xs, ys), key=lambda p: p[0])
+            xs_sorted, ys_sorted = zip(*pairs)
+            ax.plot(xs_sorted, ys_sorted, marker="o")
+            ax.set_title(title)
+            ax.set_xscale("log")
+            ax.set_yscale("symlog", linthresh=1e-5)
+            ax.grid(True, which="both", linestyle=":")
+
+        _plot(axes[0, col], h_fw, df_fw, f"df/d{key} (fw)")
+        _plot(axes[1, col], h_c, df_c, f"df/d{key} (cen)")
+        axes[1, col].set_xlabel("h")
+        axes[0, col].set_ylabel("df/dk")
+        axes[1, col].set_ylabel("df/dk")
+
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+    print(f"Saved {out_path}")
+
+
+# ----------------------------
+# main
+# ----------------------------
+if __name__ == "__main__":
     if MAKE_TS_PLOT:
-        plt.figure(figsize=(7, 4))
-        for folder, label in CASE_FOLDERS:
-            x, y = read_ts(folder)
-            if x and y:
-                # sort by iteration to keep lines monotone
-                xy = sorted(zip(x, y), key=lambda p: p[0])
-                xs, ys = zip(*xy)
-                plt.plot(xs, ys, marker="o", label=label)
-        plt.xlabel("SLSQPiter")
-        plt.ylabel("Ts (settling time)")
-        plt.title("Ts vs Iteration (PID multistart)")
-        plt.grid(False)
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(OUT_NAME)
-        plt.close()
-        print(f"Saved {OUT_NAME}")
+        plot_ts_multistart(CASE_FOLDERS, ts_col="Ts", title="Ts vs Iteration (PID multistart)", out_path=OUT_NAME)
+
+    if MAKE_TS_NM_PLOT and NM_CASE_FOLDERS:
+        plot_ts_multistart(NM_CASE_FOLDERS, ts_col="Ts", iter_col="NMiter",
+                           title="Ts vs Iteration (Nelder-Mead multistart)",
+                           out_path=OUT_NM, legend_loc="best",
+                           line_kwargs={"markersize": 2.0, "linewidth": 0.6})
+
+    if MAKE_UAV_TS_PLOT and UAV_CASE_FOLDERS:
+        plot_ts_multistart(UAV_CASE_FOLDERS, ts_col="Ts_h", title="Ts_h vs Iteration (UAV multistart)",
+                           out_path=OUT_UAV, legend_loc="upper right")
 
     if MAKE_DERIV_PLOT:
-        # Derivative plot: 2x3 grid, top row forward, bottom row central, columns kp/ki/kd
-        fig, axes = plt.subplots(2, 3, figsize=(10, 6), sharex=True)
-        for col, key in enumerate(["kp", "ki", "kd"]):
-            path = DERIV_FILES.get(key, "")
-            h_vals_fw, df_fw = [], []
-            h_vals_c, df_c = [], []
-            if not os.path.isfile(path):
-                print(f"Missing derivative CSV: {path}")
-            else:
-                with open(path, newline="") as f:
-                    reader = csv.DictReader(f)
-                    for row in reader:
-                        try:
-                            h = float(row.get("h", "nan"))
-                            fw = float(row.get("dfForward", "nan"))
-                            ce = float(row.get("dfCentral", "nan"))
-                            if math.isfinite(h) and math.isfinite(fw):
-                                h_vals_fw.append(h)
-                                df_fw.append(fw)
-                            if math.isfinite(h) and math.isfinite(ce):
-                                h_vals_c.append(h)
-                                df_c.append(ce)
-                        except Exception:
-                            continue
-            # plot forward: sort, drop zero derivatives, center by median
-            if h_vals_fw:
-                xy_fw = sorted(zip(h_vals_fw, df_fw), key=lambda p: p[0])
-                xs_fw, ys_fw = zip(*xy_fw)
-                xs_fw = [x for x, y in zip(xs_fw, ys_fw) if y != 0]
-                ys_fw = [y for y in ys_fw if y != 0]
-                if ys_fw:
-                    med_fw = np.median(ys_fw)
-                    ys_fw_center = [y - med_fw for y in ys_fw]
-                    axes[0, col].plot(xs_fw, ys_fw_center, marker="o")
-            # plot central
-            if h_vals_c:
-                xy_c = sorted(zip(h_vals_c, df_c), key=lambda p: p[0])
-                xs_c, ys_c = zip(*xy_c)
-                xs_c = [x for x, y in zip(xs_c, ys_c) if y != 0]
-                ys_c = [y for y in ys_c if y != 0]
-                if ys_c:
-                    med_c = np.median(ys_c)
-                    ys_c_center = [y - med_c for y in ys_c]
-                    axes[1, col].plot(xs_c, ys_c_center, marker="o")
+        plot_deriv_grid(DERIV_FILES, OUT_DERIV, ["kp", "ki", "kd"])
 
-            axes[0, col].set_title(f"df/d{key} (fw)")
-            axes[1, col].set_title(f"df/d{key} (cen)")
-            axes[0, col].set_xscale("log")
-            axes[1, col].set_xscale("log")
-            axes[1, col].set_xlabel("h")
-            axes[0, col].set_ylabel("df/dk")
-            axes[1, col].set_ylabel("df/dk")
-            for ax in axes[:, col]:
-                ax.set_yscale("symlog", linthresh=1e-5)
-                ax.grid(True, which="both", linestyle=":")
-
-        fig.tight_layout()
-        fig.savefig(OUT_DERIV)
-        plt.close(fig)
-        print(f"Saved {OUT_DERIV}")
-
-
-if __name__ == "__main__":
-    main()
+    if MAKE_UAV_DERIV_PLOT and UAV_DERIV_FILES:
+        plot_deriv_grid(UAV_DERIV_FILES, OUT_UAV_DERIV,
+                        ["Kp_h", "Ki_h", "Kp_th", "Ki_th", "Kd_th", "Kp_V", "Ki_V"])
