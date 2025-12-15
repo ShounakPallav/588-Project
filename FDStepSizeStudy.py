@@ -38,23 +38,7 @@ def formatH(val):
 
 
 def highlightMatch(val, ref):
-    if not np.isfinite(val) or not np.isfinite(ref):
-        return "--"
-    sval = f"{val:.8g}"
-    sref = f"{ref:.8g}"
-    prefix = ""
-    suffix = sval
-    for i in range(min(len(sval), len(sref))):
-        if sval[i] == sref[i]:
-            prefix += sval[i]
-        else:
-            suffix = sval[i:]
-            break
-    if len(prefix) == len(sval):
-        suffix = ""
-    if prefix:
-        return r"\textcolor{blue}{" + prefix + "}" + suffix
-    return sval
+    return "--" if not np.isfinite(val) else f"{val:.8g}"
 
 
 def latexEscape(text):
@@ -79,13 +63,10 @@ def writeLatex(rows, exactGrad, label, varName, outPath):
             hfmt = formatH(h)
             fp = f"{fPlus:.10g}" if np.isfinite(fPlus) else "--"
             fm = f"{fMinus:.10g}" if np.isfinite(fMinus) else "--"
-            dfw = highlightMatch(dfForward, exactGrad)
-            dfc = highlightMatch(dfCentral, exactGrad)
+            dfw = highlightMatch(dfForward, np.nan)
+            dfc = highlightMatch(dfCentral, np.nan)
             dfText = f"{deltaForward:.10g}" if np.isfinite(deltaForward) else "--"
             f.write(f"{hfmt} & {fp} & {fm} & {dfText} & {dfw} & {dfc}\\\\\n")
-        if np.isfinite(exactGrad):
-            f.write("\\midrule\n")
-            f.write(f"Exact &  &  &  & {exactGrad:.8g} & {exactGrad:.8g}\\\\\n")
         f.write("\\bottomrule\n")
         f.write("\\end{tabular}\n")
         safeLabel = latexEscape(label)
@@ -124,20 +105,8 @@ def stepStudy(kStart, hList, outCsvPath, varIndex, varName, outTexPath):
         for row in rows:
             writer.writerow(row)
 
-    exactGrad = np.nan
-    # choose reference as last finite, non-zero central diff if available
-    for _, _, _, _, _, dfCentral in reversed(rows):
-        if np.isfinite(dfCentral) and dfCentral != 0:
-            exactGrad = dfCentral
-            break
-    if not np.isfinite(exactGrad):
-        for _, _, _, _, _, dfCentral in reversed(rows):
-            if np.isfinite(dfCentral):
-                exactGrad = dfCentral
-                break
-
     if outTexPath:
-        writeLatex(rows, exactGrad, fdo.buildLabel(kStart), varName, outTexPath)
+        writeLatex(rows, np.nan, fdo.buildLabel(kStart), varName, outTexPath)
         pdflatex = shutil.which("pdflatex")
         if pdflatex:
             try:

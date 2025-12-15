@@ -4,9 +4,9 @@ from FDOptimization import runOptimization
 
 def runCases():
     cases = [
-        # np.array([-0.5, 0.5, 0.5]), #need to run
-        np.array([0.5, 0.5, 0.5]),
-        # np.array([0.5, 0.5, -0.5]), #need to run
+        np.array([-0.5, 0.5, 0.5]), #need to run
+        # np.array([0.5, 0.5, 0.5]),
+        np.array([0.5, 0.5, -0.5]), #need to run
     ]
     for case in cases:
         print(f'\n=== Multistart with kp {case[0]}, ki {case[1]}, kd {case[2]} ===')
