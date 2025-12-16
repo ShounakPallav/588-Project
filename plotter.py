@@ -3,6 +3,7 @@ import csv
 import math
 import numpy as np
 import matplotlib.pyplot as plt  # type: ignore
+import matplotlib.ticker as mticker
 
 # ----------------------------
 # configuration
@@ -17,13 +18,17 @@ OUT_NAME = "functionvalvsiterationsimplemultistart.pdf"
 OUT_DERIV = "dobjectivewrtdesignvariablesfwandcent.pdf"
 OUT_UAV = "functionvalvsiterationUAVmultistart.pdf"
 OUT_UAV_DERIV = "dobjectivewrtdesignvariablesfwandcentUAV.pdf"
+OUT_UAV_CONSTR_DERIV = "dconstraintwrtdesignvariablesfwandcentUAV.pdf"
+OUT_CONSTR_DERIV = "dconstraintwrtdesignvariablesfwandcent.pdf"
 OUT_NM = "functionvalvsiterationsimpleNMmultistart.pdf"
 
 # Toggles
 MAKE_TS_PLOT = True
 MAKE_DERIV_PLOT = True
+MAKE_CONSTR_DERIV_PLOT = True
 MAKE_UAV_TS_PLOT = True
 MAKE_UAV_DERIV_PLOT = True
+MAKE_UAV_CONSTR_DERIV_PLOT = True
 MAKE_TS_NM_PLOT = True
 
 # Derivative CSVs for kp, ki, kd (from step size study)
@@ -58,6 +63,34 @@ def find_uav_cases():
     return cases
 
 
+
+
+def _thin_yticks(ax):
+    """Keep every other y tick label to reduce clutter."""
+    ticks = ax.get_yticks()
+    labels = []
+    for i, val in enumerate(ticks):
+        if i % 2 == 0:
+            labels.append(mticker.FormatStrFormatter("%g")(val))
+        else:
+            labels.append("")
+    ax.set_yticks(ticks)
+    ax.set_yticklabels(labels)
+
+
+
+def find_simple_constraint_files():
+    constraints = ["c_M", "c_SSe_plus", "c_SSe_minus"]
+    vars_ = ["kp", "ki", "kd"]
+    for name in sorted(os.listdir(".")):
+        if not (os.path.isdir(name) and name.startswith("slices_kp-1_ki1_kd1")):
+            continue
+        label = name.replace("slices_", "")
+        files = {c: {v: os.path.join(name, f"stepStudy_{label}_{c}_{v}.csv") for v in vars_} for c in constraints}
+        if any(os.path.isfile(p) for row in files.values() for p in row.values()):
+            return files
+    return {}
+
 def find_uav_deriv_files():
     """Return a mapping for UAV deriv plots; pick the first folder that actually has stepStudy CSVs."""
     keys = ["Kp_h", "Ki_h", "Kp_th", "Ki_th", "Kd_th", "Kp_V", "Ki_V"]
@@ -67,6 +100,19 @@ def find_uav_deriv_files():
         label = name.replace("slicesUAV_", "")
         files = {k: os.path.join(name, f"stepStudy_{label}_{k}.csv") for k in keys}
         if any(os.path.isfile(p) for p in files.values()):
+            return files
+    return {}
+
+
+def find_uav_constraint_files():
+    constraints = ["c_Mh", "c_SSeh+", "c_SSeh-", "c_vmax", "c_SSeV+", "c_SSeV-"]
+    keys = ["Kp_h", "Ki_h", "Kp_th", "Ki_th", "Kd_th", "Kp_V", "Ki_V"]
+    for name in sorted(os.listdir(".")):
+        if not (os.path.isdir(name) and name.startswith("slicesUAV_")):
+            continue
+        label = name.replace("slicesUAV_", "")
+        files = {c: {k: os.path.join(name, f"stepStudy_{label}_{c}_{k}.csv") for k in keys} for c in constraints}
+        if any(os.path.isfile(p) for row in files.values() for p in row.values()):
             return files
     return {}
 
@@ -82,8 +128,10 @@ def find_nm_cases():
     return cases
 
 
+SIMPLE_CONSTR_FILES = find_simple_constraint_files()
 UAV_CASE_FOLDERS = find_uav_cases()
 UAV_DERIV_FILES = find_uav_deriv_files()
+UAV_CONSTR_FILES = find_uav_constraint_files()
 NM_CASE_FOLDERS = find_nm_cases()
 
 
@@ -200,6 +248,7 @@ def plot_deriv_grid(files_dict, out_path, labels):
             ax.set_xscale("log")
             ax.set_yscale("symlog", linthresh=1e-5)
             ax.grid(True, which="both", linestyle=":")
+            _thin_yticks(ax)
 
         _plot(axes[0, col], h_fw, df_fw, f"df/d{key} (fw)")
         _plot(axes[1, col], h_c, df_c, f"df/d{key} (cen)")
@@ -211,6 +260,113 @@ def plot_deriv_grid(files_dict, out_path, labels):
     fig.savefig(out_path)
     plt.close(fig)
     print(f"Saved {out_path}")
+
+
+
+
+def plot_simple_constraint_deriv_grid(file_map, out_path, constraints=None, variables=None):
+    if not file_map:
+        print("No simple constraint derivative files found")
+        return
+    if constraints is None:
+        constraints = ["c_M", "c_SSe_plus", "c_SSe_minus"]
+    if variables is None:
+        variables = ["kp", "ki", "kd"]
+    nrows, ncols = len(constraints) * 2, len(variables)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 3.0, nrows * 2.0), squeeze=False)
+    for base_r, c_name in enumerate(constraints):
+        for c, v_name in enumerate(variables):
+            for offset, label in ((0, "fw"), (len(constraints), "cen")):
+                r = base_r + offset
+                ax = axes[r, c]
+                path = file_map.get(c_name, {}).get(v_name)
+                if not path or not os.path.isfile(path):
+                    ax.axis("off")
+                    continue
+                try:
+                    data = np.genfromtxt(path, delimiter=",", names=True)
+                except Exception:
+                    ax.axis("off")
+                    continue
+                if getattr(data, "size", 0) == 0:
+                    ax.axis("off")
+                    continue
+                h = np.asarray(data["h"], float)
+                names = list(getattr(data, "dtype", [] ).names or [])
+                def col(name):
+                    return np.asarray(data[name], float) if name in names else np.asarray([], float)
+                vals = col("dfForward") if label == "fw" else col("dfCentral")
+                mask = np.isfinite(h) & np.isfinite(vals)
+                if not np.any(mask):
+                    ax.axis("off")
+                    continue
+                ax.plot(h[mask], vals[mask], marker="o", markersize=2.5, linewidth=0.7)
+                ax.set_xscale("log")
+                ax.set_yscale("symlog", linthresh=1e-5)
+                ax.grid(True, which="both", linestyle=":")
+                _thin_yticks(ax)
+                if r == nrows - 1:
+                    ax.set_xlabel("h")
+                if c == 0:
+                    ax.set_ylabel(f"{c_name} ({label})")
+                if base_r == 0:
+                    ax.set_title(v_name)
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+    print(f"Saved {out_path}")
+def plot_uav_constraint_deriv_grid(file_map, out_path, constraints=None, variables=None):
+    if not file_map:
+        print("No UAV constraint derivative files found")
+        return
+    if constraints is None:
+        constraints = ["c_Mh", "c_SSeh+", "c_SSeh-", "c_vmax", "c_SSeV+", "c_SSeV-"]
+    if variables is None:
+        variables = ["Kp_h", "Ki_h", "Kp_th", "Ki_th", "Kd_th", "Kp_V", "Ki_V"]
+    nrows, ncols = len(constraints) * 2, len(variables)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 3.0, nrows * 2.0), squeeze=False)
+    for base_r, c_name in enumerate(constraints):
+        for c, v_name in enumerate(variables):
+            for offset, label in ((0, "fw"), (len(constraints), "cen")):
+                r = base_r + offset
+                ax = axes[r, c]
+                path = file_map.get(c_name, {}).get(v_name)
+                if not path or not os.path.isfile(path):
+                    ax.axis("off")
+                    continue
+                try:
+                    data = np.genfromtxt(path, delimiter=",", names=True)
+                except Exception:
+                    ax.axis("off")
+                    continue
+                if getattr(data, "size", 0) == 0:
+                    ax.axis("off")
+                    continue
+                h = np.asarray(data["h"], float)
+                names = list(getattr(data, "dtype", [] ).names or [])
+                def col(name):
+                    return np.asarray(data[name], float) if name in names else np.asarray([], float)
+                vals = col("dfForward") if label == "fw" else col("dfCentral")
+                mask = np.isfinite(h) & np.isfinite(vals)
+                if not np.any(mask):
+                    ax.axis("off")
+                    continue
+                ax.plot(h[mask], vals[mask], marker="o", markersize=2.5, linewidth=0.7)
+                ax.set_xscale("log")
+                ax.set_yscale("symlog", linthresh=1e-5)
+                ax.grid(True, which="both", linestyle=":")
+                _thin_yticks(ax)
+                if r == nrows - 1:
+                    ax.set_xlabel("h")
+                if c == 0:
+                    ax.set_ylabel(f"{c_name} ({label})")
+                if base_r == 0:
+                    ax.set_title(v_name)
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+    print(f"Saved {out_path}")
+
 
 
 # ----------------------------
@@ -233,6 +389,11 @@ if __name__ == "__main__":
     if MAKE_DERIV_PLOT:
         plot_deriv_grid(DERIV_FILES, OUT_DERIV, ["kp", "ki", "kd"])
 
+    if MAKE_CONSTR_DERIV_PLOT:
+        plot_simple_constraint_deriv_grid(SIMPLE_CONSTR_FILES, OUT_CONSTR_DERIV)
+
     if MAKE_UAV_DERIV_PLOT and UAV_DERIV_FILES:
         plot_deriv_grid(UAV_DERIV_FILES, OUT_UAV_DERIV,
                         ["Kp_h", "Ki_h", "Kp_th", "Ki_th", "Kd_th", "Kp_V", "Ki_V"])
+    if MAKE_UAV_CONSTR_DERIV_PLOT and UAV_CONSTR_FILES:
+        plot_uav_constraint_deriv_grid(UAV_CONSTR_FILES, OUT_UAV_CONSTR_DERIV)

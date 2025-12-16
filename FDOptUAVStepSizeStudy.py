@@ -5,38 +5,68 @@ import shutil
 import subprocess
 import FDOptUAV as fdo  # reuse MATLAB engine, model setup, and helpers
 
+# Toggles
+RUN_OBJ_STUDY = False  # set True to regenerate objective (Ts_h) step-size tables
+RUN_CONS_STUDY = True  # set False if you only want the objective tables
 
 # Design variables order (matching FDOptUAV):
 # k[0]=Kp_h, k[1]=Ki_h, k[2]=Kp_th, k[3]=Ki_th, k[4]=Kd_th, k[5]=Kp_V, k[6]=Ki_V
 VAR_NAMES = ["Kp_h", "Ki_h", "Kp_th", "Ki_th", "Kd_th", "Kp_V", "Ki_V"]
 FMT_SHORT = lambda val: f"{val:.4g}".replace('+', '').replace(' ', '')
 
+# Constraints c >= 0 style (same as FDOptUAV consVals)
+CONSTRAINTS = [
+    ("c_Mh",  "0.10 - M_h",    lambda Ts_h, M_h, SSe_h, SSe_V, vmax: 0.10 - M_h),
+    ("c_SSeh+", "1e-3 - SSe_h", lambda Ts_h, M_h, SSe_h, SSe_V, vmax: 1e-3 - SSe_h),
+    ("c_SSeh-", "1e-3 + SSe_h", lambda Ts_h, M_h, SSe_h, SSe_V, vmax: 1e-3 + SSe_h),
+    ("c_vmax", "22 - Vmax",     lambda Ts_h, M_h, SSe_h, SSe_V, vmax: 22.0 - vmax),
+    ("c_SSeV+", "1e-3 - SSe_V", lambda Ts_h, M_h, SSe_h, SSe_V, vmax: 1e-3 - SSe_V),
+    ("c_SSeV-", "1e-3 + SSe_V", lambda Ts_h, M_h, SSe_h, SSe_V, vmax: 1e-3 + SSe_V),
+]
 
-def simulate(k):
-    """Run Simulink for gains k and return objective f = Ts_h (height settling time)."""
+
+def simulate_metrics(k):
+    """Run Simulink for gains k and return metrics (Ts_h, M_h, SSe_h, SSe_V, vmax, ok)."""
     try:
         k = np.asarray(k, float)
+        eng = fdo.eng
         # push gains
-        fdo.eng.workspace['Kp_h'] = float(k[0])
-        fdo.eng.workspace['Ki_h'] = float(k[1])
-        fdo.eng.workspace['Kp_th'] = float(k[2])
-        fdo.eng.workspace['Ki_th'] = float(k[3])
-        fdo.eng.workspace['Kd_th'] = float(k[4])
-        fdo.eng.workspace['N_th'] = 1.0
-        fdo.eng.workspace['Kp_V'] = float(k[5])
-        fdo.eng.workspace['Ki_V'] = float(k[6])
+        eng.workspace['Kp_h'] = float(k[0])
+        eng.workspace['Ki_h'] = float(k[1])
+        eng.workspace['Kp_th'] = float(k[2])
+        eng.workspace['Ki_th'] = float(k[3])
+        eng.workspace['Kd_th'] = float(k[4])
+        eng.workspace['N_th'] = 1.0
+        eng.workspace['Kp_V'] = float(k[5])
+        eng.workspace['Ki_V'] = float(k[6])
 
-        fdo.eng.sim(fdo.model, nargout=0)
+        eng.sim(fdo.model, nargout=0)
 
-        t = fdo.toVec(fdo.eng.workspace['time'])
-        h_ref = fdo._expand_ref_to_time(t, fdo.toVec(fdo.eng.workspace['h_ref']))
-        h_out = fdo.toVec(fdo.eng.workspace['h_f_out'])
-        if t.size == 0 or h_out.size == 0 or np.any(~np.isfinite(t)) or np.any(~np.isfinite(h_out)):
-            return np.inf
-        Ts_h, _, _ = fdo.step_metrics(t, h_out, h_ref)
-        return float(Ts_h)
+        t = fdo.toVec(eng.workspace['time'])
+        h_ref = fdo._expand_ref_to_time(t, fdo.toVec(eng.workspace['h_ref']))
+        h_out = fdo.toVec(eng.workspace['h_f_out'])
+        V_ref = fdo._expand_ref_to_time(t, fdo.toVec(eng.workspace['V_ref']))
+        V_out = fdo.toVec(eng.workspace['v_f_out'])
+
+        if (t.size == 0 or h_out.size == 0 or V_out.size == 0 or
+                np.any(~np.isfinite(t)) or np.any(~np.isfinite(h_out)) or np.any(~np.isfinite(V_out))):
+            return (np.inf, np.inf, np.inf, np.inf, np.inf, False)
+
+        ymax = 1e6
+        if np.max(np.abs(h_out)) > ymax or np.max(np.abs(V_out)) > ymax:
+            return (np.inf, np.inf, np.inf, np.inf, np.inf, False)
+
+        Ts_h, M_h, SSe_h = fdo.step_metrics(t, h_out, h_ref)
+        _, _, SSe_V = fdo.step_metrics(t, V_out, V_ref)
+        vmax = float(np.max(V_out)) if V_out.size > 0 else np.inf
+
+        if not (np.isfinite(Ts_h) and np.isfinite(M_h) and np.isfinite(SSe_h) and
+                np.isfinite(SSe_V) and np.isfinite(vmax)):
+            return (np.inf, np.inf, np.inf, np.inf, np.inf, False)
+
+        return (float(Ts_h), float(M_h), float(SSe_h), float(SSe_V), float(vmax), True)
     except Exception:
-        return np.inf
+        return (np.inf, np.inf, np.inf, np.inf, np.inf, False)
 
 
 def formatH(val):
@@ -57,7 +87,7 @@ def latexEscape(text):
     return str(text).replace("_", "\\_")
 
 
-def writeLatex(rows, label, varName, outPath):
+def writeLatex(rows, label, varName, outPath, descr):
     var_disp = varName.replace("_", "\\_")
     safeLabel = label.replace("_", "\\_")
     with open(outPath, "w", newline="") as f:
@@ -79,13 +109,13 @@ def writeLatex(rows, label, varName, outPath):
                     f"{highlight(deltaForward)} & {highlight(dfForward)} & {highlight(dfCentral)}\\\\\n")
         f.write("\\bottomrule\n")
         f.write("\\end{tabular}\n")
-        f.write(f"\\caption{{Step size study for {var_disp}, gains \\texttt{{{safeLabel}}}}}\n")
+        f.write(f"\\caption{{Step size study for {descr}, gains \\texttt{{{safeLabel}}}}}\n")
         f.write("\\end{table}\n")
         f.write("\\end{document}\n")
 
 
-def stepStudy(kStart, hList, outCsvPath, varIndex, varName, outTexPath):
-    f0 = simulate(kStart)
+def stepStudy(kStart, hList, outCsvPath, varIndex, varName, outTexPath, eval_func, descr):
+    f0 = eval_func(kStart)
     rows = []
     outDir = os.path.normpath(os.path.dirname(outCsvPath))
     if outDir:
@@ -99,8 +129,8 @@ def stepStudy(kStart, hList, outCsvPath, varIndex, varName, outTexPath):
         kMinus = kStart.copy()
         kPlus[varIndex] += h
         kMinus[varIndex] -= h
-        fPlus = simulate(kPlus)
-        fMinus = simulate(kMinus)
+        fPlus = eval_func(kPlus)
+        fMinus = eval_func(kMinus)
 
         deltaForward = fPlus - f0
         dfForward = (fPlus - f0) / h if np.isfinite(fPlus) else np.nan
@@ -122,7 +152,7 @@ def stepStudy(kStart, hList, outCsvPath, varIndex, varName, outTexPath):
             writer.writerow(row)
 
     if outTexPath:
-        writeLatex(rows, fdo.buildLabel(kStart), varName, outTexPath)
+        writeLatex(rows, fdo.buildLabel(kStart), varName, outTexPath, descr)
         pdflatex = shutil.which("pdflatex")
         if pdflatex:
             try:
@@ -145,6 +175,28 @@ def stepStudy(kStart, hList, outCsvPath, varIndex, varName, outTexPath):
         print(f"h={h:.0e}  f+= {fp:.6g}  f-= {fm:.6g}  dfFw={gfw:.6g}  dfCen={gcen:.6g}")
 
 
+def build_short_label(k):
+    return ("Kph" + FMT_SHORT(k[0]) +
+            "_Kih" + FMT_SHORT(k[1]) +
+            "_Kpth" + FMT_SHORT(k[2]) +
+            "_Kith" + FMT_SHORT(k[3]) +
+            "_Kdth" + FMT_SHORT(k[4]) +
+            "_KpV" + FMT_SHORT(k[5]) +
+            "_KiV" + FMT_SHORT(k[6]))
+
+
+def eval_objective(k):
+    Ts_h, M_h, SSe_h, SSe_V, vmax, ok = simulate_metrics(k)
+    return Ts_h if ok else np.inf
+
+
+def eval_constraint(k, func):
+    Ts_h, M_h, SSe_h, SSe_V, vmax, ok = simulate_metrics(k)
+    if not ok:
+        return np.inf
+    return func(Ts_h, M_h, SSe_h, SSe_V, vmax)
+
+
 if __name__ == "__main__":
     kStart = np.array([0.054469664015827916,
                        0.007635496131252121,
@@ -155,21 +207,21 @@ if __name__ == "__main__":
                        1.504167233332254], dtype=float)
 
     hList = [10.0 ** (-p) for p in range(1, 23)]  # 1e-1 to 1e-22
-    def build_short_label(k):
-        return ("Kph" + FMT_SHORT(k[0]) +
-                "_Kih" + FMT_SHORT(k[1]) +
-                "_Kpth" + FMT_SHORT(k[2]) +
-                "_Kith" + FMT_SHORT(k[3]) +
-                "_Kdth" + FMT_SHORT(k[4]) +
-                "_KpV" + FMT_SHORT(k[5]) +
-                "_KiV" + FMT_SHORT(k[6]))
-
     label = build_short_label(kStart)
     outDir = f"slicesUAV_{label}"
     os.makedirs(outDir, exist_ok=True)
 
-    os.makedirs(outDir, exist_ok=True)
-    for idx, name in enumerate(VAR_NAMES):
-        outCsv = os.path.join(outDir, f"stepStudy_{label}_{name}.csv")
-        outTex = os.path.join(outDir, f"stepStudy_{label}_{name}.tex")
-        stepStudy(kStart, hList, outCsv, idx, name, outTex)
+    if RUN_OBJ_STUDY:
+        for idx, name in enumerate(VAR_NAMES):
+            outCsv = os.path.join(outDir, f"stepStudy_{label}_{name}.csv")
+            outTex = os.path.join(outDir, f"stepStudy_{label}_{name}.tex")
+            stepStudy(kStart, hList, outCsv, idx, name, outTex, eval_objective, descr=name)
+
+    if RUN_CONS_STUDY:
+        for c_name, c_desc, c_func in CONSTRAINTS:
+            for idx, vname in enumerate(VAR_NAMES):
+                outCsv = os.path.join(outDir, f"stepStudy_{label}_{c_name}_{vname}.csv")
+                outTex = os.path.join(outDir, f"stepStudy_{label}_{c_name}_{vname}.tex")
+                stepStudy(kStart, hList, outCsv, idx, vname, outTex,
+                          lambda k, f=c_func: eval_constraint(k, f),
+                          descr=f"{c_desc} w.r.t. {vname}")
