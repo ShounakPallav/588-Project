@@ -20,15 +20,23 @@ OUT_UAV = "functionvalvsiterationUAVmultistart.pdf"
 OUT_UAV_DERIV = "dobjectivewrtdesignvariablesfwandcentUAV.pdf"
 OUT_UAV_CONSTR_DERIV = "dconstraintwrtdesignvariablesfwandcentUAV.pdf"
 OUT_CONSTR_DERIV = "dconstraintwrtdesignvariablesfwandcent.pdf"
+OUT_DERIV_SAME = OUT_DERIV.replace(".pdf", "same.pdf")
+OUT_UAV_DERIV_SAME = OUT_UAV_DERIV.replace(".pdf", "same.pdf")
+OUT_UAV_CONSTR_DERIV_SAME = OUT_UAV_CONSTR_DERIV.replace(".pdf", "same.pdf")
+OUT_CONSTR_DERIV_SAME = OUT_CONSTR_DERIV.replace(".pdf", "same.pdf")
 OUT_NM = "functionvalvsiterationsimpleNMmultistart.pdf"
 
 # Toggles
 MAKE_TS_PLOT = True
 MAKE_DERIV_PLOT = True
+MAKE_DERIV_PLOT_SAME = True
 MAKE_CONSTR_DERIV_PLOT = True
+MAKE_CONSTR_DERIV_PLOT_SAME = True
 MAKE_UAV_TS_PLOT = True
 MAKE_UAV_DERIV_PLOT = True
+MAKE_UAV_DERIV_PLOT_SAME = True
 MAKE_UAV_CONSTR_DERIV_PLOT = True
+MAKE_UAV_CONSTR_DERIV_PLOT_SAME = True
 MAKE_TS_NM_PLOT = True
 
 # Derivative CSVs for kp, ki, kd (from step size study)
@@ -262,6 +270,63 @@ def plot_deriv_grid(files_dict, out_path, labels):
     print(f"Saved {out_path}")
 
 
+def plot_deriv_grid_same(files_dict, out_path, labels):
+    """Plot fw and central on the same axes; halves row count vs plot_deriv_grid."""
+    cols = len(labels)
+    fig, axes = plt.subplots(1, cols, figsize=(3.2 * cols, 3.2), squeeze=False)
+    for col, key in enumerate(labels):
+        ax = axes[0, col]
+        path = files_dict.get(key, "")
+        h_fw, df_fw = [], []
+        h_c, df_c = [], []
+        if os.path.isfile(path):
+            with open(path, newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    try:
+                        h = float(row.get("h", "nan"))
+                        fw = float(row.get("dfForward", "nan"))
+                        ce = float(row.get("dfCentral", "nan"))
+                    except Exception:
+                        continue
+                    if math.isfinite(h):
+                        if math.isfinite(fw):
+                            h_fw.append(h)
+                            df_fw.append(fw)
+                        if math.isfinite(ce):
+                            h_c.append(h)
+                            df_c.append(ce)
+        else:
+            print(f"Missing derivative CSV: {path}")
+
+        def _plot_both(ax, xs_fw, ys_fw, xs_c, ys_c, title):
+            if not xs_fw and not xs_c:
+                ax.set_title(title + " (no data)")
+                ax.grid(True, which="both", linestyle=":")
+                return
+            if xs_c:
+                pairs_c = sorted(zip(xs_c, ys_c), key=lambda p: p[0])
+                xs_sorted_c, ys_sorted_c = zip(*pairs_c)
+                ax.plot(xs_sorted_c, ys_sorted_c, marker="o", markersize=6.0, linewidth=0.7, label="cen")
+            if xs_fw:
+                pairs_fw = sorted(zip(xs_fw, ys_fw), key=lambda p: p[0])
+                xs_sorted_fw, ys_sorted_fw = zip(*pairs_fw)
+                ax.plot(xs_sorted_fw, ys_sorted_fw, marker="o", markersize=3.0, linewidth=0.9, label="fw")
+            ax.set_title(title)
+            ax.set_xscale("log")
+            ax.set_yscale("symlog", linthresh=1e-5)
+            ax.grid(True, which="both", linestyle=":")
+            _thin_yticks(ax)
+            ax.legend(fontsize=8)
+
+        _plot_both(ax, h_fw, df_fw, h_c, df_c, f"df/d{key}")
+        ax.set_xlabel("h")
+        ax.set_ylabel("df/dk")
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+    print(f"Saved {out_path}")
+
 
 
 def plot_simple_constraint_deriv_grid(file_map, out_path, constraints=None, variables=None):
@@ -311,6 +376,66 @@ def plot_simple_constraint_deriv_grid(file_map, out_path, constraints=None, vari
                     ax.set_ylabel(f"{c_name} ({label})")
                 if base_r == 0:
                     ax.set_title(v_name)
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+    print(f"Saved {out_path}")
+
+
+def plot_simple_constraint_deriv_grid_same(file_map, out_path, constraints=None, variables=None):
+    """Plot fw and central on same axes; halves the row count compared to plot_simple_constraint_deriv_grid."""
+    if not file_map:
+        print("No simple constraint derivative files found")
+        return
+    if constraints is None:
+        constraints = ["c_M", "c_SSe_plus", "c_SSe_minus"]
+    if variables is None:
+        variables = ["kp", "ki", "kd"]
+    nrows, ncols = len(constraints), len(variables)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 3.0, nrows * 2.0), squeeze=False)
+    for r, c_name in enumerate(constraints):
+        for c, v_name in enumerate(variables):
+            ax = axes[r, c]
+            path = file_map.get(c_name, {}).get(v_name)
+            if not path or not os.path.isfile(path):
+                ax.axis("off")
+                continue
+            try:
+                data = np.genfromtxt(path, delimiter=",", names=True)
+            except Exception:
+                ax.axis("off")
+                continue
+            if getattr(data, "size", 0) == 0:
+                ax.axis("off")
+                continue
+            h = np.asarray(data["h"], float)
+            names = list(getattr(data, "dtype", []).names or [])
+
+            def col(name):
+                return np.asarray(data[name], float) if name in names else np.asarray([], float)
+
+            fw_vals = col("dfForward")
+            cen_vals = col("dfCentral")
+            mask_fw = np.isfinite(h) & np.isfinite(fw_vals)
+            mask_c = np.isfinite(h) & np.isfinite(cen_vals)
+            if not np.any(mask_fw) and not np.any(mask_c):
+                ax.axis("off")
+                continue
+            if np.any(mask_c):
+                ax.plot(h[mask_c], cen_vals[mask_c], marker="o", markersize=6.0, linewidth=0.7, label="cen")
+            if np.any(mask_fw):
+                ax.plot(h[mask_fw], fw_vals[mask_fw], marker="o", markersize=3.0, linewidth=0.9, label="fw")
+            ax.set_xscale("log")
+            ax.set_yscale("symlog", linthresh=1e-5)
+            ax.grid(True, which="both", linestyle=":")
+            _thin_yticks(ax)
+            ax.legend(fontsize=7)
+            if r == nrows - 1:
+                ax.set_xlabel("h")
+            if c == 0:
+                ax.set_ylabel(c_name)
+            if r == 0:
+                ax.set_title(v_name)
     fig.tight_layout()
     fig.savefig(out_path)
     plt.close(fig)
@@ -368,6 +493,64 @@ def plot_uav_constraint_deriv_grid(file_map, out_path, constraints=None, variabl
     print(f"Saved {out_path}")
 
 
+def plot_uav_constraint_deriv_grid_same(file_map, out_path, constraints=None, variables=None):
+    """Plot fw and central on same axes; halves the row count compared to plot_uav_constraint_deriv_grid."""
+    if not file_map:
+        print("No UAV constraint derivative files found")
+        return
+    if constraints is None:
+        constraints = ["c_Mh", "c_SSeh+", "c_SSeh-", "c_vmax", "c_SSeV+", "c_SSeV-"]
+    if variables is None:
+        variables = ["Kp_h", "Ki_h", "Kp_th", "Ki_th", "Kd_th", "Kp_V", "Ki_V"]
+    nrows, ncols = len(constraints), len(variables)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 3.0, nrows * 2.0), squeeze=False)
+    for r, c_name in enumerate(constraints):
+        for c, v_name in enumerate(variables):
+            ax = axes[r, c]
+            path = file_map.get(c_name, {}).get(v_name)
+            if not path or not os.path.isfile(path):
+                ax.axis("off")
+                continue
+            try:
+                data = np.genfromtxt(path, delimiter=",", names=True)
+            except Exception:
+                ax.axis("off")
+                continue
+            if getattr(data, "size", 0) == 0:
+                ax.axis("off")
+                continue
+            h = np.asarray(data["h"], float)
+            names = list(getattr(data, "dtype", []).names or [])
+
+            def col(name):
+                return np.asarray(data[name], float) if name in names else np.asarray([], float)
+
+            fw_vals = col("dfForward")
+            cen_vals = col("dfCentral")
+            mask_fw = np.isfinite(h) & np.isfinite(fw_vals)
+            mask_c = np.isfinite(h) & np.isfinite(cen_vals)
+            if not np.any(mask_fw) and not np.any(mask_c):
+                ax.axis("off")
+                continue
+            if np.any(mask_c):
+                ax.plot(h[mask_c], cen_vals[mask_c], marker="o", markersize=6.0, linewidth=0.7, label="cen")
+            if np.any(mask_fw):
+                ax.plot(h[mask_fw], fw_vals[mask_fw], marker="o", markersize=3.0, linewidth=0.9, label="fw")
+            ax.set_xscale("log")
+            ax.set_yscale("symlog", linthresh=1e-5)
+            ax.grid(True, which="both", linestyle=":")
+            _thin_yticks(ax)
+            ax.legend(fontsize=7)
+            if r == nrows - 1:
+                ax.set_xlabel("h")
+            if c == 0:
+                ax.set_ylabel(c_name)
+            if r == 0:
+                ax.set_title(v_name)
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+    print(f"Saved {out_path}")
 
 # ----------------------------
 # main
@@ -388,12 +571,21 @@ if __name__ == "__main__":
 
     if MAKE_DERIV_PLOT:
         plot_deriv_grid(DERIV_FILES, OUT_DERIV, ["kp", "ki", "kd"])
+    if MAKE_DERIV_PLOT_SAME:
+        plot_deriv_grid_same(DERIV_FILES, OUT_DERIV_SAME, ["kp", "ki", "kd"])
 
     if MAKE_CONSTR_DERIV_PLOT:
         plot_simple_constraint_deriv_grid(SIMPLE_CONSTR_FILES, OUT_CONSTR_DERIV)
+    if MAKE_CONSTR_DERIV_PLOT_SAME:
+        plot_simple_constraint_deriv_grid_same(SIMPLE_CONSTR_FILES, OUT_CONSTR_DERIV_SAME)
 
     if MAKE_UAV_DERIV_PLOT and UAV_DERIV_FILES:
         plot_deriv_grid(UAV_DERIV_FILES, OUT_UAV_DERIV,
                         ["Kp_h", "Ki_h", "Kp_th", "Ki_th", "Kd_th", "Kp_V", "Ki_V"])
+    if MAKE_UAV_DERIV_PLOT_SAME and UAV_DERIV_FILES:
+        plot_deriv_grid_same(UAV_DERIV_FILES, OUT_UAV_DERIV_SAME,
+                             ["Kp_h", "Ki_h", "Kp_th", "Ki_th", "Kd_th", "Kp_V", "Ki_V"])
     if MAKE_UAV_CONSTR_DERIV_PLOT and UAV_CONSTR_FILES:
         plot_uav_constraint_deriv_grid(UAV_CONSTR_FILES, OUT_UAV_CONSTR_DERIV)
+    if MAKE_UAV_CONSTR_DERIV_PLOT_SAME and UAV_CONSTR_FILES:
+        plot_uav_constraint_deriv_grid_same(UAV_CONSTR_FILES, OUT_UAV_CONSTR_DERIV_SAME)
